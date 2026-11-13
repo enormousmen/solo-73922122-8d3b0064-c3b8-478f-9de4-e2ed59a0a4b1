@@ -117,8 +117,10 @@ class SourceStore:
     def _delete_tokens(self) -> None:
         self._conn.execute("DELETE FROM tokens")
 
-    def create_item(self, *, identifier: str, title: str, creator: str, subject: str, description: str, publisher: str, date_: str, type_: str) -> None:
-        now = today_utc()
+    def create_item(self, *, identifier: str, title: str, creator: str, subject: str,
+                    description: str, publisher: str, date_: str, type_: str,
+                    datestamp: str | None = None) -> None:
+        now = datestamp or today_utc()
         with self._lock:
             self._conn.execute("BEGIN")
             self._conn.execute(
@@ -129,27 +131,28 @@ class SourceStore:
             self._delete_tokens()
             self._conn.execute("COMMIT")
 
-    def update_item(self, identifier: str, **fields) -> sqlite3.Row | None:
+    def update_item(self, identifier: str, datestamp: str | None = None, **fields) -> sqlite3.Row | None:
         item = self.get_item(identifier)
         if item is None:
             return None
         allowed = {"title", "creator", "subject", "description", "publisher", "date", "type"}
         updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
-        if not updates:
+        if not updates and not datestamp:
             return item
         sets = ", ".join(f"{k} = ?" for k in updates)
         params = list(updates.values())
+        sql_sets = (sets + ", ") if sets else ""
         with self._lock:
             self._conn.execute("BEGIN")
             self._conn.execute(
-                f"UPDATE items SET {sets}, datestamp = ?, version = version + 1 WHERE identifier = ?",
-                (*params, today_utc(), identifier),
+                f"UPDATE items SET {sql_sets}datestamp = ?, version = version + 1 WHERE identifier = ?",
+                (*params, datestamp or today_utc(), identifier),
             )
             self._delete_tokens()
             self._conn.execute("COMMIT")
         return self.get_item(identifier)
 
-    def delete_item(self, identifier: str) -> sqlite3.Row | None:
+    def delete_item(self, identifier: str, datestamp: str | None = None) -> sqlite3.Row | None:
         item = self.get_item(identifier)
         if item is None:
             return None
@@ -157,13 +160,13 @@ class SourceStore:
             self._conn.execute("BEGIN")
             self._conn.execute(
                 "UPDATE items SET deleted = 1, datestamp = ?, title = title || '（已撤回）' WHERE identifier = ?",
-                (today_utc(), identifier),
+                (datestamp or today_utc(), identifier),
             )
             self._delete_tokens()
             self._conn.execute("COMMIT")
         return self.get_item(identifier)
 
-    def restore_item(self, identifier: str) -> sqlite3.Row | None:
+    def restore_item(self, identifier: str, datestamp: str | None = None) -> sqlite3.Row | None:
         item = self.get_item(identifier)
         if item is None:
             return None
@@ -171,11 +174,23 @@ class SourceStore:
             self._conn.execute("BEGIN")
             self._conn.execute(
                 "UPDATE items SET deleted = 0, datestamp = ?, version = version + 1 WHERE identifier = ?",
-                (today_utc(), identifier),
+                (datestamp or today_utc(), identifier),
             )
             self._delete_tokens()
             self._conn.execute("COMMIT")
         return self.get_item(identifier)
+
+    def redate_all(self, datestamp: str) -> int:
+        """把全部记录的 datestamp 改为指定日期（演示跨截止日场景的快捷操作）。"""
+        date.fromisoformat(datestamp[:10])
+        with self._lock:
+            self._conn.execute("BEGIN")
+            cur = self._conn.execute(
+                "UPDATE items SET datestamp = ?", (datestamp[:10],)
+            )
+            self._delete_tokens()
+            self._conn.execute("COMMIT")
+            return cur.rowcount
 
     # ---- 分页 ----
     def trip_next_token(self) -> None:
@@ -430,19 +445,23 @@ def create_source_app(db_path: str | None = None) -> FastAPI:
         form = await request.form()
         ident = str(form.get("identifier", ""))
         fields = {k: str(form.get(k, "")) for k in ("title", "creator", "subject", "description", "publisher", "date", "type")}
-        store.update_item(ident, **{k: v for k, v in fields.items() if v})
+        datestamp = str(form.get("datestamp", "") or "").strip() or None
+        store.update_item(ident, datestamp=datestamp,
+                          **{k: v for k, v in fields.items() if v})
         return _redirect()
 
     @app.post("/demo/delete")
     async def demo_delete(request: Request):
         form = await request.form()
-        store.delete_item(str(form.get("identifier", "")))
+        datestamp = str(form.get("datestamp", "") or "").strip() or None
+        store.delete_item(str(form.get("identifier", "")), datestamp=datestamp)
         return _redirect()
 
     @app.post("/demo/restore")
     async def demo_restore(request: Request):
         form = await request.form()
-        store.restore_item(str(form.get("identifier", "")))
+        datestamp = str(form.get("datestamp", "") or "").strip() or None
+        store.restore_item(str(form.get("identifier", "")), datestamp=datestamp)
         return _redirect()
 
     @app.post("/demo/create")
@@ -459,7 +478,20 @@ def create_source_app(db_path: str | None = None) -> FastAPI:
                 publisher=str(form.get("publisher", "")),
                 date_=str(form.get("date", "")),
                 type_=str(form.get("type", "") or "book"),
+                datestamp=str(form.get("datestamp", "") or "").strip() or None,
             )
+        return _redirect()
+
+    @app.post("/demo/redate-all")
+    async def demo_redate_all(request: Request):
+        form = await request.form()
+        datestamp = str(form.get("datestamp", "") or "").strip()
+        if not datestamp:
+            return RedirectResponse(url="/?error=缺少日期", status_code=303)
+        try:
+            store.redate_all(datestamp)
+        except ValueError:
+            return RedirectResponse(url="/?error=日期格式无效", status_code=303)
         return _redirect()
 
     @app.post("/demo/reset-tokens")

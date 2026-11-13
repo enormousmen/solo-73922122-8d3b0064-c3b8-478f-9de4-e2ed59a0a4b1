@@ -28,8 +28,8 @@ services:
       OAI_SOURCE_HOME: http://localhost:8001/
       # 可选：none|generate_error|commit_error|crash_before_commit|crash_after_publish
       PUBLISH_FAILURE_MODE: ${PUBLISH_FAILURE_MODE:-none}
-      # 可选：单次后台采集最多页数，演示"继续采集"
-      MAX_PAGES_PER_CALL: ${MAX_PAGES_PER_CALL:-}
+      # 演示源每页 2 条；每次后台调用采 1 页即暂停，浏览器可演示“继续采集/放弃本轮”
+      MAX_PAGES_PER_CALL: ${MAX_PAGES_PER_CALL:-1}
     ports:
       - "8000:8000"
     volumes:

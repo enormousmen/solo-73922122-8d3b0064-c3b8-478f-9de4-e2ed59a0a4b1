@@ -25,7 +25,9 @@
 </div>
 
 <section class="card">
-  <h2>操作面板（用于演示同日更新与撤回）</h2>
+  <h2>操作面板（用于演示同日更新、撤回与跨截止日）</h2>
+  <p class="muted">“变更日期（datestamp）”留空则用今天；填入如 <code>2026-11-15</code>
+    可把变更挂到指定日期，便于演示“15 日窗口放弃后再采 14 日，目录不混入 15 日变更”。</p>
   <div class="grid">
     <div>
       <h3>修改记录</h3>
@@ -37,6 +39,7 @@
         </label>
         <label>新标题 <input type="text" name="title" placeholder="留空则不改"></label>
         <label>新主题 <input type="text" name="subject" placeholder="留空则不改"></label>
+        <label>变更日期（datestamp） <input type="date" name="datestamp" value="{{ today }}"></label>
         <button class="primary">保存修改（刷新 datestamp）</button>
       </form>
     </div>
@@ -48,6 +51,7 @@
             {% for it in items %}<option value="{{ it.identifier }}">{{ it.identifier }}</option>{% endfor %}
           </select>
         </label>
+        <label>变更日期（datestamp） <input type="date" name="datestamp" value="{{ today }}"></label>
         <button>撤回（deleted 永久标记）</button>
       </form>
       <form method="post" action="/demo/restore" class="stack inline">
@@ -56,12 +60,13 @@
             {% for it in items %}<option value="{{ it.identifier }}">{{ it.identifier }}</option>{% endfor %}
           </select>
         </label>
+        <label>变更日期（datestamp） <input type="date" name="datestamp" value="{{ today }}"></label>
         <button>再版（恢复上线）</button>
       </form>
       <p class="muted">撤回后记录仍以 deleted 头发送，采集端不能以"未出现"推断删除。</p>
     </div>
     <div>
-      <h3>分页凭据</h3>
+      <h3>分页凭据 / 批量改期</h3>
       <form method="post" action="/demo/trip-token">
         <button class="danger">下一次凭据请求失效（推荐演示）</button>
       </form>
@@ -69,6 +74,10 @@
         <button>立即清除所有分页凭据</button>
       </form>
       <p class="muted">失效后，采集端的下一次续页会收到 <code>badResumptionToken</code>，须回原窗口第一页重采、不推进水位。</p>
+      <form method="post" action="/demo/redate-all" class="stack inline" style="margin-top:10px">
+        <label>全部记录改期到 <input type="date" name="datestamp" value="{{ today }}"></label>
+        <button class="ghost">批量改期（跨截止日演示准备）</button>
+      </form>
     </div>
   </div>
 </section>

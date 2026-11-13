@@ -4,7 +4,10 @@
 1. 构造 XML（"生成"阶段，可失败；失败时旧目录与旧水位完全不动）。
 2. 在输出目录写唯一临时文件 → fsync。
 3. os.replace 为最终唯一文件名（同目录 rename 原子）。
-4. 写 publications 行：水位、file_path、sha256、记录数在同一条记录里。
+4. 调用方在单个数据库事务里：暂存覆盖 records、写 publications 行（水位、
+   file_path、sha256、记录数同一条记录）、轮次置 completed。事务带
+   ``status='publishing'`` 条件，轮次若已放弃则整体回滚，文件成为孤儿并在
+   启动时清理。
 
 页面展示的水位与下载文件都只从"最新 publications 行"解析，因此进程在发布
 过程中任意位置退出，重启后二者仍是同一次完整发布：
@@ -119,11 +122,6 @@ def cleanup_orphans(output_dir: str, keep_paths) -> list[str]:
     return removed
 
 
-def _keep_paths(db: Database) -> set[str]:
-    """保留所有已登记的发布文件（便于审计/回溯）；只清理从未登记过的孤儿。"""
-    return {row["file_path"] for row in db.query("SELECT file_path FROM publications")}
-
-
 def write_publication(
     db: Database,
     output_dir: str,
@@ -134,7 +132,12 @@ def write_publication(
     fault: str = FAULT_NONE,
     exit_process=os._exit,
 ) -> dict:
-    """返回已落库的发布描述；任何失败都抛异常且不改变任何已发布状态。"""
+    """生成目录文件并原子改名，但不碰任何已发布数据库状态。
+
+    返回文件描述（路径/哈希/大小/记录数），由调用方在单个事务里执行
+    ``db.commit_run_publication`` 完成"暂存覆盖 + 发布登记 + 轮次完成"。
+    任何失败都抛异常且不改变已发布目录与水位。
+    """
     if fault not in KNOWN_FAULTS:
         raise PublishFault(f"未知故障注入模式: {fault}")
     fault = db.take_publish_fault() or fault
@@ -181,7 +184,7 @@ def write_publication(
         raise PublishFault(f"目录发布改名失败：{exc}") from exc
 
     if fault == FAULT_CRASH_AFTER_PUBLISH:
-        # 演示：文件已原子替换，但发布记录尚未落库，进程退出
+        # 演示：文件已原子替换，但数据库事务尚未提交，进程退出
         exit_process(70)
         raise PublishFault("演示进程未退出（exit hook 返回）")
 
@@ -192,26 +195,6 @@ def write_publication(
             pass
         raise PublishFault("演示：目录文件已写出但发布登记失败（旧目录仍为当前版本）")
 
-    # --- 4. 水位与文件同一条记录落库 ---
-    try:
-        db.record_publication(
-            run_id=run_id,
-            watermark=watermark,
-            file_path=final_path,
-            file_name=final_name,
-            record_count=len(records),
-            size_bytes=len(payload),
-            sha256=digest,
-        )
-    except Exception as exc:
-        # 旧 publications 行未动；新文件成为孤儿
-        try:
-            os.remove(final_path)
-        except OSError:
-            pass
-        raise PublishFault(f"发布登记失败：{exc}") from exc
-
-    cleanup_orphans(output_dir, keep_paths=_keep_paths(db))
     return {
         "path": final_path,
         "name": final_name,

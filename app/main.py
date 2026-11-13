@@ -206,6 +206,14 @@ def build_app() -> FastAPI:
         run = db.get_run(run_id)
         if run is None or not run.is_unresolved:
             return RedirectResponse(url="/?error=该轮次无需继续", status_code=303)
+        if run.status == "running":
+            # 已有活跃任务时避免重复唤起；若任务已退出（tasks 里无记录），允许唤起。
+            existing = tasks.get(run_id)
+            if existing is not None and not existing.done():
+                return RedirectResponse(url="/?error=该轮次正在采集中，无需重复继续", status_code=303)
+        # 状态翻转在 DB 内条件完成；与"放弃"并发提交时只有一个动作能赢。
+        if run.status == "paused" and not db.begin_resume(run_id):
+            return RedirectResponse(url="/?error=该轮次已被放弃，不能继续", status_code=303)
         spawn(run_id, harvester.resume(run_id))
         return RedirectResponse(url=f"/?message=第 {run_id} 轮正在后台继续", status_code=303)
 
@@ -214,7 +222,8 @@ def build_app() -> FastAPI:
         run = db.get_run(run_id)
         if run is None or run.status != "publish_failed":
             return RedirectResponse(url="/?error=该轮次当前不需要重试发布", status_code=303)
-        db.begin_publish_retry(run_id)
+        if not db.begin_publish_retry(run_id):
+            return RedirectResponse(url="/?error=该轮次已被放弃，不能重试发布", status_code=303)
         spawn(run_id, harvester.retry_publish_after_begin(run_id))
         return RedirectResponse(url=f"/?message=第 {run_id} 轮正在重新发布", status_code=303)
 
@@ -223,11 +232,15 @@ def build_app() -> FastAPI:
         run = db.get_run(run_id)
         if run is None or not run.is_unresolved:
             return RedirectResponse(url="/?error=该轮次不可放弃", status_code=303)
-        task = tasks.get(run_id)
-        if task is not None and not task.done():
-            return RedirectResponse(url="/?error=采集任务仍在运行，请等其暂停后再放弃", status_code=303)
-        db.cancel_run(run_id)
-        return RedirectResponse(url="/?message=已放弃本轮，水位与已发布目录保持不变", status_code=303)
+        # 条件 UPDATE 仲裁：与"继续/重试"同时提交时只有一个成功。
+        # 放弃成功即清空该轮暂存；正在运行的采集任务下一次写库/循环检查时
+        # 会发现状态已变 canceled 而停止，迟到处理写不进也发布不了任何内容。
+        if not db.cancel_run(run_id):
+            return RedirectResponse(url="/?error=该轮次状态已变化，放弃未生效", status_code=303)
+        return RedirectResponse(
+            url="/?message=已放弃本轮：该轮增改删已作废，水位与已发布目录保持不变",
+            status_code=303,
+        )
 
     @app.post("/config/fault")
     async def config_fault(request: Request):
@@ -260,6 +273,43 @@ def build_app() -> FastAPI:
     @app.get("/healthz", response_class=PlainTextResponse)
     def healthz():
         return "ok"
+
+    @app.get("/status")
+    def status():
+        """供脚本/自动化读取的精简状态（页面演示脚本使用）。"""
+        runs = db.recent_runs(1)
+        latest = db.latest_publication()
+        active, deleted = db.record_stats()
+        return {
+            "latest_run": (
+                {
+                    "id": runs[0].id,
+                    "status": runs[0].status,
+                    "mode": runs[0].mode,
+                    "window_from": runs[0].window_from,
+                    "window_until": runs[0].window_until,
+                    "is_unresolved": runs[0].is_unresolved,
+                    "pages_done": runs[0].pages_done,
+                    "records_seen": runs[0].records_seen,
+                }
+                if runs
+                else None
+            ),
+            "watermark": db.watermark(),
+            "active_records": active,
+            "deleted_records": deleted,
+            "latest_publication": (
+                {
+                    "id": latest["id"],
+                    "run_id": latest["run_id"],
+                    "watermark": latest["watermark"],
+                    "file_name": latest["file_name"],
+                    "record_count": latest["record_count"],
+                }
+                if latest
+                else None
+            ),
+        }
 
     return app
 

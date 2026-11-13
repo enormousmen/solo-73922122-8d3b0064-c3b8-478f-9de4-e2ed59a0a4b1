@@ -211,15 +211,24 @@ def test_crash_around_publish_keeps_pairing(env, fault):
     leftover = [n for n in os.listdir(tmp_path / "published") if not n.startswith("catalog-run")]
     assert leftover == []
     assert len(os.listdir(tmp_path / "published")) == 1  # 只剩仍被引用的旧版本
-    # 重试后拿到新版本
+    # 重试后拿到新版本：暂存仍在，合并视图必须包含崩溃前的改名
     retry_pub = Publisher(db2, str(tmp_path / "published"), fault="none")
     record = db2.unresolved_run()
     assert record is not None and record.status == "publish_failed"
     db2.begin_publish_retry(record.id)
-    result = retry_pub.publish(db2.get_run(record.id), db2.active_records(), record.window_until)
-    db2.mark_completed(record.id)
+    merged = db2.merged_active_records(record.id)
+    descriptor = retry_pub.publish(db2.get_run(record.id), merged, record.window_until)
+    db2.commit_run_publication(
+        record.id,
+        watermark=descriptor["watermark"],
+        file_path=descriptor["path"],
+        file_name=descriptor["name"],
+        record_count=descriptor["record_count"],
+        size_bytes=descriptor["size_bytes"],
+        sha256=descriptor["sha256"],
+    )
     assert db2.watermark() == "2026-11-13"
-    assert "崩溃前更新" in open(result["path"], encoding="utf-8").read()
+    assert "崩溃前更新" in open(descriptor["path"], encoding="utf-8").read()
 
 
 def test_restart_after_publication_commit_marks_run_completed(env):

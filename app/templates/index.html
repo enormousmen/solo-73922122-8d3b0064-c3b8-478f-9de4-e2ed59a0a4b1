@@ -35,7 +35,9 @@
     </div>
 
     {% if run.status == 'running' %}
-      <p class="hint">采集中（页面自动刷新）。旧目录仍可下载；进度已实时保存，断流或重启后点“继续采集”即可续采。</p>
+      <p class="hint">采集中（页面自动刷新）。记录先写入本轮暂存，旧目录仍可下载；
+        进度已实时保存，断流或重启后点“继续采集”即可续采；随时可“放弃本轮”，
+        放弃后该轮增改删整批作废，迟到的采集结果不会写入或发布。</p>
     {% elif run.status == 'publishing' %}
       <p class="hint">记录已收齐，正在生成并发布目录。发布成功前，页面与下载仍指向上一版完整目录。</p>
     {% elif run.status == 'paused' %}
@@ -49,13 +51,14 @@
     {% elif run.status == 'completed' %}
       <p class="hint">本轮已完成并发布。{% if run.notice %} {{ run.notice }}{% endif %}</p>
     {% elif run.status == 'canceled' %}
-      <p class="hint">本轮已放弃；水位与已发布目录保持不变。{% if run.notice %} {{ run.notice }}{% endif %}</p>
+      <p class="hint">本轮已放弃：该轮采到的增改删已整轮作废，不会进入任何后续目录；
+        已发布目录与水位保持不变。{% if run.notice %} {{ run.notice }}{% endif %}</p>
     {% endif %}
 
     <div class="progress">
       <div class="bar"><span style="width: {{ (run.progress_fraction * 100) if run.progress_fraction is not none else (0 if run.pages_done == 0 else 100) }}%"></span></div>
       <span class="muted">
-        {{ run.pages_done }} 页 · 已写入 {{ run.records_seen }} 条
+        {{ run.pages_done }} 页 · 暂存 {{ run.records_seen }} 条
         {% if run.complete_list_size %} / 共 {{ run.complete_list_size }}{% endif %}
         {% if run.resumption_token %} · 分页凭据已保存，可续采{% endif %}
         {% if run.token_resets %} · 凭据重置 {{ run.token_resets }} 次{% endif %}
@@ -75,14 +78,12 @@
           <button class="primary">重试发布</button>
         </form>
       {% endif %}
-      {% if run.is_unresolved and run.status not in ('running','publishing') %}
+      {% if run.is_unresolved %}
         <form method="post" action="/harvest/{{ run.id }}/cancel"
-              onsubmit="return confirm('放弃本轮？已入库记录保留，水位与已发布目录不变。')">
+              onsubmit="return confirm('放弃本轮？该轮暂存的增改删将整轮作废，水位与已发布目录不变。')">
           <button class="ghost">放弃本轮</button>
         </form>
-      {% endif %}
-      {% if run.is_unresolved %}
-        <span class="muted">本轮未结束，需先继续/重试或放弃后才能开始新轮次。</span>
+        <span class="muted">本轮未结束，需先继续/重试或放弃后才能开始新轮次；放弃与继续同时提交时只接纳一种。</span>
       {% endif %}
       {% if latest %}<a class="btn" href="/catalog/download">下载当前目录</a>{% endif %}
     </div>
@@ -123,7 +124,7 @@
   </div>
 
   <div class="card">
-    <h2>本轮变更（按 identifier 更新/删除）</h2>
+    <h2>本轮暂存变更（按 identifier 更新/删除）</h2>
     {% if changed %}
       <table class="mini">
         <thead><tr><th>identifier</th><th>datestamp</th><th>状态</th></tr></thead>
@@ -137,9 +138,10 @@
         {% endfor %}
         </tbody>
       </table>
-      <p class="muted">仅列本轮触及的记录；未出现 ≠ 删除，不做缺席推断。</p>
+      <p class="muted">仅列本轮暂存、尚未发布的记录；放弃本轮即整批作废。
+        未出现 ≠ 删除，不做缺席推断；已发布的删除标记永久保留。</p>
     {% else %}
-      <p class="muted">本轮尚未写入记录。</p>
+      <p class="muted">本轮暂无暂存记录（放弃轮次的暂存会被清空）。</p>
     {% endif %}
   </div>
 </section>
@@ -210,8 +212,9 @@
   <h2>演示脚本</h2>
   <ol class="muted">
     <li>首次“开始采集”→ 全量 5 条并发布；水位 = 本轮截止日。</li>
-    <li>在演示源修改/撤回记录（同日 datestamp），再次采集：窗口从水位（含当天）开始，按 identifier 更新或删除。</li>
-    <li>采集中点源页面“让所有分页凭据失效”，继续采集会收到 <code>badResumptionToken</code>：从原窗口第一页重采、水位不动、已入库记录不丢。</li>
+    <li>在演示源修改/撤回记录（可指定变更日期），再次采集：窗口从水位（含当天）开始，按 identifier 暂存更新或删除；发布时才合入已发布快照。</li>
+    <li>跨截止日 + 放弃：把一条记录的变更日期改到 15 日，开一轮截止 15 日的采集并在暂停后“放弃本轮”；再开截止 14 日的一轮并完成 —— 下载目录里不会出现 15 日的改名/撤回。</li>
+    <li>采集中点源页面“让所有分页凭据失效”，继续采集会收到 <code>badResumptionToken</code>：清空本轮暂存、从原窗口第一页重采、水位不动。</li>
     <li>选 <code>crash_after_publish</code> 并重采一轮 → 进程退出；<code>docker compose restart catalog-web</code> 后，页面水位与下载文件仍是上一版完整结果。</li>
   </ol>
 </section>
